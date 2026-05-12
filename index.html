@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="robots" content="noindex, nofollow, noarchive, nosnippet" />
+  <meta name="googlebot" content="noindex, nofollow" />
+  <title>Signing in…</title>
+  <style>
+    body { font-family: system-ui; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; color: #666; }
+  </style>
+</head>
+<body>
+  <p id="msg">Signing in with GitHub…</p>
+  <button id="close-btn" onclick="window.close()" style="display:none;margin-top:1rem;padding:0.4rem 1rem;font:inherit;cursor:pointer">Close</button>
+  <script>
+    const CLIENT_ID = 'Ov23liBriq7dOJ74qcP4';
+    const TOKEN_URL = 'https://proxy.neevs.io/token';
+    const TIMEOUT_MS = 15000;
+
+    function fetchWithTimeout(url, opts) {
+      const ctrl = new AbortController();
+      const id = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
+      return fetch(url, { ...opts, signal: ctrl.signal }).finally(() => clearTimeout(id));
+    }
+
+    function fail(msg) {
+      document.getElementById('msg').textContent = msg;
+      document.getElementById('close-btn').style.display = 'inline-block';
+      window.opener?.postMessage({ type: 'gh-auth', auth: null }, '*');
+      try { localStorage.setItem('gh-auth-result', JSON.stringify({ auth: null })); } catch {}
+    }
+
+    async function run() {
+      const params = new URLSearchParams(location.search);
+      const code = params.get('code');
+      if (!code) { fail('No authorization code.'); return; }
+
+      const codeKey = 'oauth_code_' + code;
+      if (sessionStorage.getItem(codeKey)) { fail('Code already used. Please sign in again.'); return; }
+      sessionStorage.setItem(codeKey, '1');
+
+      const state = params.get('state') || '';
+      const app = state.includes('|') ? state.split('|')[1] : '';
+
+      try {
+        await fetch(TOKEN_URL.replace('/token', '/health'), { method: 'GET' }).catch(() => {});
+
+        const res = await fetchWithTimeout(TOKEN_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ client_id: CLIENT_ID, code, ...(app && { app }) }),
+        });
+        const data = await res.json();
+        if (data.error) throw new Error(data.error_description || data.error);
+
+        const user = data.user ?? await fetchWithTimeout('https://api.github.com/user', {
+          headers: { Authorization: `Bearer ${data.access_token}`, Accept: 'application/vnd.github+json' }
+        }).then(r => r.json());
+
+        const auth = {
+          token: data.access_token,
+          login: user.login,
+          avatar_url: user.avatar_url,
+          user,
+        };
+
+        window.opener?.postMessage({ type: 'gh-auth', auth }, '*');
+        try { localStorage.setItem('gh-auth-result', JSON.stringify({ auth })); } catch {}
+        window.close();
+      } catch (err) {
+        const msg = err.name === 'AbortError'
+          ? 'Sign-in timed out. Please try again.'
+          : 'Authentication failed: ' + err.message;
+        fail(msg);
+      }
+    }
+
+    run();
+  </script>
+</body>
+</html>
